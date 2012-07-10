@@ -1,0 +1,198 @@
+<?php
+
+/**
+ * @file
+ * Implements configurable social network share links to nodes
+ */
+
+/**
+ * Implementation of hook_menu().
+ */
+function social_share_menu() {
+  $items = array();
+  $items['admin/settings/social-share'] = array(
+    'title'            => t('Social Share'),
+    'description'      => t('Configure share link styling.'),
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('social_share_admin_settings'),
+    'access arguments' => array('administer site configuration'),
+    'type'             => MENU_NORMAL_ITEM,
+    'file'             => 'social_share.admin.inc',
+  );
+  return $items;
+}
+
+/**
+ * Implementation of hook_nodeapi().
+ */
+function social_share_nodeapi(&$node, $op, $teaser, $page) {
+  switch ($op) {
+    case 'view':
+      // these three lines check to see if we can display the share box
+      if (($teaser && variable_get('social_share_teaser', 1) == 1) || (!$teaser)) {
+        $enabledTypes = variable_get('social_share_node_types', array());
+        if ($enabledTypes[$node->type]) {
+          $share_box = '<div class="social-share-container">Share: ';
+          // get a list of enabled share links and generate them individually
+          $sites = variable_get('social_share_sites', array());
+          foreach($sites as $site => $enabled) {
+            if ($enabled) {
+              $share_box .= theme('social_share', $site, $node);
+            }
+          }
+          $share_box .= '</div>';
+
+          // put the shareBox into the node before it's rendered
+          $node->content['social_share'] = array(
+            '#value' => $share_box,
+            '#weight' => variable_get('social_share_weight', 0)
+          );
+	}
+      }
+      break;
+  }
+}
+
+/*
+* Implementation of hook_theme()
+*/
+function social_share_theme() {
+  return array(
+    'social_share' => array(
+      'arguments' => array('site', 'node')
+    ),
+  );
+}
+
+
+/*
+* Render an individual share link
+*/
+function theme_social_share($site, $node){
+  global $base_url;
+
+  // define the share links
+  $sites['facebook']   = array('name' => 'Facebook', 'url' => 'http://facebook.com/sharer.php?u=%URL%&amp;t=%TITLE%');
+  if (variable_get('social_share_twitter_method', original) == 'new') {
+    $sites['twitter']    = array('name' => 'Twitter', 'url' => 'http://twitter.com/intent/tweet?text=%TITLE%&amp;url=%URL%');
+  }
+  else {
+    $sites['twitter']    = array('name' => 'Twitter', 'url' => 'http://twitter.com/home?status=%TITLE%+%URL%');
+  }
+  $sites['googlebuzz'] = array('name' => 'Google Buzz', 'url' => 'http://www.google.com/buzz/post?url=%URL%&amp;message=%TITLE%');
+  $sites['myspace']    = array('name' => 'Myspace', 'url' => 'http://www.myspace.com/Modules/PostTo/Pages/default.aspx?u=%URL%&amp;c=%TITLE%');
+  $sites['msnlive']    = array('name' => 'MSN Live', 'url' => 'http://profile.live.com/badge/?url=%URL%&amp;title=%TITLE%&amp;description=%DESC%');
+  $sites['yahoo']      = array('name' => 'Yahoo', 'url' => 'http://bookmarks.yahoo.com/toolbar/savebm?opener=tb&amp;u=%URL%&amp;t=%TITLE%&amp;d=%DESC%');
+  $sites['linkedin']   = array('name' => 'LinkedIn', 'url' => 'http://www.linkedin.com/shareArticle?url=%URL%&amp;mini=true&amp;title=%TITLE%&amp;ro=false&amp;summary=%DESC%&amp;source=');
+  $sites['orkut']      = array('name' => 'Orkut', 'url' => 'http://promote.orkut.com/preview?nt=orkut.com&amp;tt=%TITLE%&amp;du=%URL%&amp;cn=%DESC%');
+  $sites['digg']       = array('name' => 'Digg', 'url' => 'http://digg.com/share?url=%URL%');
+  $sites['delicious']  = array('name' => 'Delicious', 'url' => 'http://www.delicious.com/save?v=5&amp;noui&amp;jump=close&amp;url=%URL%&amp;title=%TITLE%');
+
+  // check for an alias on the node
+  if (!isset($node->link)) {
+    $row = db_query("SELECT dst FROM {url_alias} WHERE src = 'node/%d'", $node->nid);
+    $alias = db_result($row);
+    $url = $base_url .'/'. ($alias ? $alias : 'node/'. $node->nid);
+  }
+  else {
+    $url = $node->link;
+  }
+  
+  // if the shorten_urls module is installed & enabled, shorten the url being shared.
+  if (module_exists('shorten')) {
+    $url = shorten_url($url);
+  }
+
+  // switch out placeholders with node informaiton
+  $maxDescLength = variable_get('social_share_max_desc_length', 50);
+  $target = variable_get('social_share_target', 0);
+
+  $placeholders = array(
+    '%TITLE%',
+    '%URL%',
+    '%DESC%'
+  );
+
+  if (isset($node->body)) {
+    $body = $node->body;
+  }
+  else {
+    $body = '';
+  }
+  // Trim title so it will fit in a tweet.
+  if ($site == 'twitter' && variable_get('social_share_twitter_truncate', FALSE) == TRUE) {
+    if ((strlen($url) + strlen($node->title)) > 140) {
+      $length = 136 - strlen($url);
+      $title  = substr($node->title, 0, $length);
+      $title .= '...';
+    }
+    else {
+      $title = $node->title;
+    }
+  }
+  else {
+    $title = $node->title;
+  }
+
+  $replacements = array(
+    urlencode($title),
+    $url,
+    urlencode(strip_tags(strlen($body) > $maxDescLength ? substr($body, 0, $maxDescLength) .'...' : $body)),
+  );
+
+  if (variable_get('social_share_new_window', 0)) {
+    $link = '<a target="_blank" class="social-share-'. $site .'" href="'. str_replace($placeholders, $replacements, $sites[$site]['url']) .'">'. $sites[$site]['name'] .'</a> ';
+  }
+  else {
+    $link = '<a class="social-share-'. $site .'" href="'. str_replace($placeholders, $replacements, $sites[$site]['url']) .'">'. $sites[$site]['name'] .'</a> ';
+  }  	
+
+  // Return the link
+  return $link;
+}
+
+
+/**
+ * Implements hook_block().
+ */
+function social_share_block($op = 'list', $delta = 0, $edit = array()) {
+  switch($op) {
+    case 'list':
+      $blocks = array();
+      if (variable_get('social_share_block', 0)) {
+        $blocks[0] = array(
+          'info'       => t('Social Share'),
+          'visibility' => 1,
+          'status'     => TRUE,
+          'region'     => 'header',
+          'weight'     => 0,
+        );
+      }
+      return $blocks;
+      break;
+
+    case 'view':
+      $block = array();
+      if (user_access('access content') && variable_get('social_share_block', 0)) {
+        $block['subject'] = t('Social Share');
+        $sites = variable_get('social_share_sites', array());
+        $node = (object)node_load(arg(1));
+        if (!isset($node->nid)) {
+          $path = isset($_GET['q']) ? $_GET['q'] : '<front>';
+          $node->link = url($path, array('absolute' => TRUE));
+        }
+        if (!isset($node->title)) {
+          $node->title = variable_get('site_name', "");
+        }
+        $block['content'] = '<div class="social-share-container">';
+        foreach ($sites as $site => $enabled) {
+          if ($enabled) {
+            $block['content'] .= theme('social_share', $site, $node);
+          }
+        }
+        $block['content'] .= '</div>';
+      }
+      return $block;
+      break;
+  }
+}
